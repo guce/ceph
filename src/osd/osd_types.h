@@ -773,7 +773,7 @@ inline ostream& operator<<(ostream& out, const osd_stat_t& s) {
 
 std::string pg_state_string(int state);
 std::string pg_vector_string(const vector<int32_t> &a);
-int pg_string_state(std::string state);
+int pg_string_state(const std::string& state);
 
 
 /*
@@ -961,7 +961,7 @@ public:
    */
   map<snapid_t, pool_snap_info_t> snaps;
   /*
-   * Alternatively, if we are definining non-pool snaps (e.g. via the
+   * Alternatively, if we are defining non-pool snaps (e.g. via the
    * Ceph MDS), we must track @removed_snaps (since @snaps is not
    * used).  Snaps and removed_snaps are to be used exclusive of each
    * other!
@@ -997,6 +997,7 @@ public:
     target_max_bytes = 0;
     target_max_objects = 0;
     cache_target_dirty_ratio_micro = 0;
+    cache_target_dirty_high_ratio_micro = 0;
     cache_target_full_ratio_micro = 0;
     hit_set_params = HitSet::Params();
     hit_set_period = 0;
@@ -1007,6 +1008,7 @@ public:
   uint64_t target_max_objects; ///< tiering: target max pool size
 
   uint32_t cache_target_dirty_ratio_micro; ///< cache: fraction of target to leave dirty
+  uint32_t cache_target_dirty_high_ratio_micro; ///<cache: fraction of  target to flush with high speed
   uint32_t cache_target_full_ratio_micro;  ///< cache: fraction of target to fill before we evict in earnest
 
   uint32_t cache_min_flush_age;  ///< minimum age (seconds) before we can flush
@@ -1037,6 +1039,7 @@ public:
       cache_mode(CACHEMODE_NONE),
       target_max_bytes(0), target_max_objects(0),
       cache_target_dirty_ratio_micro(0),
+      cache_target_dirty_high_ratio_micro(0),
       cache_target_full_ratio_micro(0),
       cache_min_flush_age(0),
       cache_min_evict_age(0),
@@ -1091,6 +1094,10 @@ public:
 
   bool is_replicated()   const { return get_type() == TYPE_REPLICATED; }
   bool is_erasure() const { return get_type() == TYPE_ERASURE; }
+
+  bool supports_omap() const {
+    return !(get_type() == TYPE_ERASURE || has_flag(FLAG_DEBUG_FAKE_EC_POOL));
+  }
 
   bool requires_aligned_append() const { return is_erasure(); }
   uint64_t required_alignment() const { return stripe_width; }
@@ -1846,6 +1853,8 @@ struct pg_interval_t {
     int new_up_primary,
     const vector<int> &old_up,
     const vector<int> &new_up,
+    int old_size,
+    int new_size,
     int old_min_size,
     int new_min_size,
     unsigned old_pg_num,
@@ -2767,6 +2776,9 @@ struct SnapSet {
     }
     return max;
   }
+
+  SnapSet get_filtered(const pg_pool_t &pinfo) const;
+  void filter(const pg_pool_t &pinfo);
 };
 WRITE_CLASS_ENCODER(SnapSet)
 
@@ -3274,7 +3286,7 @@ public:
     return blocked;
   }
 
-  // do simple synchronous mutual exclusion, for now.  now waitqueues or anything fancy.
+  // do simple synchronous mutual exclusion, for now.  no waitqueues or anything fancy.
   void ondisk_write_lock() {
     lock.Lock();
     writers_waiting++;

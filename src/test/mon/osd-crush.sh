@@ -15,7 +15,7 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU Library Public License for more details.
 #
-source test/ceph-helpers.sh
+source ../qa/workunits/ceph-helpers.sh
 
 function run() {
     local dir=$1
@@ -113,7 +113,7 @@ function TEST_crush_rule_create_erasure() {
     ! ./ceph osd erasure-code-profile ls | grep default || return 1
     ./ceph osd crush rule create-erasure $ruleset || return 1
     CEPH_ARGS='' ./ceph --admin-daemon $dir/ceph-mon.a.asok log flush || return 1
-    grep 'profile default set' $dir/mon.a.log || return 1
+    grep 'profile set default' $dir/mon.a.log || return 1
     ./ceph osd erasure-code-profile ls | grep default || return 1
     ./ceph osd crush rule rm $ruleset || return 1
     ! ./ceph osd crush rule ls | grep $ruleset || return 1
@@ -203,6 +203,27 @@ function TEST_crush_rename_bucket() {
     ./ceph osd tree | grep host2 || return 1
     ./ceph osd crush rename-bucket host1 host2 || return 1 # idempotency
     ./ceph osd crush rename-bucket nonexistent something 2>&1 | grep "Error ENOENT" || return 1
+}
+
+function TEST_crush_reject_empty() {
+    local dir=$1
+    run_mon $dir a || return 1
+    # should have at least one OSD
+    run_osd $dir 0 || return 1
+
+    local empty_map=$dir/empty_map
+    :> $empty_map.txt
+    ./crushtool -c $empty_map.txt -o $empty_map.map || return 1
+    expect_failure $dir "Error EINVAL" \
+        ./ceph osd setcrushmap -i $empty_map.map || return 1
+}
+
+function TEST_crush_tree() {
+    local dir=$1
+    run_mon $dir a || return 1
+
+    ./ceph osd crush tree --format=xml | \
+        $XMLSTARLET val -e -r test/mon/osd-crush-tree.rng - || return 1
 }
 
 main osd-crush "$@"

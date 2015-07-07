@@ -220,11 +220,13 @@ protected:
     return osdmap_ref;
   }
 
+public:
   OSDMapRef get_osdmap() const {
     assert(is_locked());
     assert(osdmap_ref);
     return osdmap_ref;
   }
+protected:
 
   /** locking and reference counting.
    * I destroy myself when the reference count hits zero.
@@ -432,7 +434,10 @@ public:
 
   /* You should not use these items without taking their respective queue locks
    * (if they have one) */
-  xlist<PG*>::item recovery_item, scrub_item, snap_trim_item, stat_queue_item;
+  xlist<PG*>::item recovery_item, stat_queue_item;
+  bool snap_trim_queued;
+  bool scrub_queued;
+
   int recovery_ops_active;
   set<pg_shard_t> waiting_on_backfill;
 #ifdef DEBUG_RECOVERY_OIDS
@@ -1035,7 +1040,6 @@ public:
       epoch_start(0),
       active(false), queue_snap_trim(false),
       waiting_on(0), shallow_errors(0), deep_errors(0), fixed(0),
-      active_rep_scrub(0),
       must_scrub(false), must_deep_scrub(false), must_repair(false),
       num_digest_updates_pending(0),
       state(INACTIVE),
@@ -1059,7 +1063,7 @@ public:
     int fixed;
     ScrubMap primary_scrubmap;
     map<pg_shard_t, ScrubMap> received_maps;
-    MOSDRepScrub *active_rep_scrub;
+    OpRequestRef active_rep_scrub;
     utime_t scrub_reg_stamp;  // stamp we registered for
 
     // flags to indicate explicitly requested scrubs (by admin)
@@ -1145,8 +1149,7 @@ public:
       waiting_on = 0;
       waiting_on_whom.clear();
       if (active_rep_scrub) {
-        active_rep_scrub->put();
-        active_rep_scrub = NULL;
+        active_rep_scrub = OpRequestRef();
       }
       received_maps.clear();
 
@@ -1180,7 +1183,7 @@ public:
     const hobject_t& soid, list<pair<ScrubMap::object, pg_shard_t> > *ok_peers,
     pg_shard_t bad_peer);
 
-  void scrub(ThreadPool::TPHandle &handle);
+  void scrub(epoch_t queued, ThreadPool::TPHandle &handle);
   void chunky_scrub(ThreadPool::TPHandle &handle);
   void scrub_compare_maps();
   void scrub_process_inconsistent();
@@ -1230,7 +1233,7 @@ public:
   void unreg_next_scrub();
 
   void replica_scrub(
-    struct MOSDRepScrub *op,
+    OpRequestRef op,
     ThreadPool::TPHandle &handle);
   void sub_op_scrub_map(OpRequestRef op);
   void sub_op_scrub_reserve(OpRequestRef op);
@@ -2009,14 +2012,24 @@ public:
   PG& operator=(const PG& rhs);
   const spg_t pg_id;
   uint64_t peer_features;
+  uint64_t acting_features;
+  uint64_t upacting_features;
 
  public:
   const spg_t&      get_pgid() const { return pg_id; }
   int        get_nrep() const { return acting.size(); }
 
-  void reset_peer_features() { peer_features = (uint64_t)-1; }
+  void reset_all_min_features() {
+     peer_features = CEPH_FEATURES_SUPPORTED_DEFAULT;
+     acting_features = CEPH_FEATURES_SUPPORTED_DEFAULT;
+     upacting_features = CEPH_FEATURES_SUPPORTED_DEFAULT;
+  }
   uint64_t get_min_peer_features() const { return peer_features; }
+  uint64_t get_min_acting_features() const { return acting_features; }
+  uint64_t get_min_upacting_features() const { return upacting_features; }
   void apply_peer_features(uint64_t f) { peer_features &= f; }
+  void apply_acting_features(uint64_t f) { acting_features &= f; }
+  void apply_upacting_features(uint64_t f) { upacting_features &= f; }
 
   void init_primary_up_acting(
     const vector<int> &newup,
@@ -2154,6 +2167,7 @@ public:
   void log_weirdness();
 
   void queue_snap_trim();
+  bool requeue_scrub();
   bool queue_scrub();
 
   /// share pg info after a pg is active
@@ -2249,7 +2263,7 @@ public:
     ThreadPool::TPHandle &handle
   ) = 0;
   virtual void do_backfill(OpRequestRef op) = 0;
-  virtual void snap_trimmer() = 0;
+  virtual void snap_trimmer(epoch_t epoch_queued) = 0;
 
   virtual int do_command(cmdmap_t cmdmap, ostream& ss,
 			 bufferlist& idata, bufferlist& odata) = 0;
@@ -2264,6 +2278,7 @@ public:
   virtual void get_watchers(std::list<obj_watch_item_t>&) = 0;
 
   virtual bool agent_work(int max) = 0;
+  virtual bool agent_work(int max, int agent_flush_quota) = 0;
   virtual void agent_stop() = 0;
   virtual void agent_delay() = 0;
   virtual void agent_clear() = 0;

@@ -336,7 +336,8 @@ set(librados_srcs
   )
 add_library(librados ${CEPH_SHARED} ${librados_srcs}
   $<TARGET_OBJECTS:cls_references_objs>
-  $<TARGET_OBJECTS:heap_profiler_objs>)
+  $<TARGET_OBJECTS:heap_profiler_objs>
+  $<TARGET_OBJECTS:common_util_obj>)
 add_dependencies(librados osdc)
 target_link_libraries(librados PRIVATE osdc osd os global common cls_lock_client
   ${CRYPTO_LIBS} ${EXTRALIBS} ${TCMALLOC_LIBS})
@@ -354,14 +355,21 @@ install(FILES include/rados/librados.h
   DESTINATION include/rados)
 install(TARGETS librados DESTINATION lib)
 
+set(libradosstriper_srcs
+  libradosstriper/libradosstriper.cc
+  libradosstriper/RadosStriperImpl.cc
+  libradosstriper/MultiAioCompletionImpl.cc)
+add_library(libradosstriper ${libradosstriper_srcs})
+target_link_libraries(libradosstriper librados cls_lock_client)
+
 set(rados_srcs
   tools/rados/rados.cc
-  tools/rados/rados_sync.cc
-  tools/rados/rados_import.cc
-  tools/rados/rados_export.cc
+  tools/RadosDump.cc
+  tools/rados/RadosImport.cc
+  tools/rados/PoolDump.cc
   common/obj_bencher.cc)
 add_executable(rados ${rados_srcs} $<TARGET_OBJECTS:heap_profiler_objs>)
-target_link_libraries(rados librados global ${CMAKE_DL_LIBS} ${TCMALLOC_LIBS})
+target_link_libraries(rados librados global ${CMAKE_DL_LIBS} ${TCMALLOC_LIBS} libradosstriper)
 
 set(librados_config_srcs
   librados-config.cc)
@@ -482,7 +490,9 @@ target_link_libraries(osd dl leveldb)
 set(ceph_osd_srcs
   ceph_osd.cc
   objclass/class_api.cc)
-add_executable(ceph-osd ${ceph_osd_srcs} $<TARGET_OBJECTS:heap_profiler_objs>)
+add_executable(ceph-osd ${ceph_osd_srcs}
+  $<TARGET_OBJECTS:heap_profiler_objs>
+  $<TARGET_OBJECTS:common_util_obj>)
 target_link_libraries(ceph-osd osd os global ${TCMALLOC_LIBS})
 install(TARGETS ceph-osd DESTINATION bin)
 
@@ -524,7 +534,9 @@ if(${WITH_MDS})
   add_library(mds ${mds_srcs})
   set(ceph_mds_srcs
     ceph_mds.cc)
-  add_executable(ceph-mds ${ceph_mds_srcs} $<TARGET_OBJECTS:heap_profiler_objs>)
+  add_executable(ceph-mds ${ceph_mds_srcs}
+    $<TARGET_OBJECTS:heap_profiler_objs>
+    $<TARGET_OBJECTS:common_util_obj>)
   target_link_libraries(ceph-mds mds osdc ${CMAKE_DL_LIBS} global
     ${TCMALLOC_LIBS} boost_thread)
   install(TARGETS ceph-mds DESTINATION bin)
